@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/tools/pager"
 	"k8s.io/klog"
@@ -94,8 +95,9 @@ func (p *ListProcessor) Run(gvr schema.GroupVersionResource) error {
 }
 
 func (p *ListProcessor) processList(l *unstructured.UnstructuredList) error {
-	workCh := make(chan *unstructured.Unstructured)
+	workCh := make(chan *unstructured.Unstructured, p.concurrency)
 	go func() {
+		defer utilruntime.HandleCrash()
 		defer close(workCh)
 		for i := range l.Items {
 			select {
@@ -111,12 +113,14 @@ func (p *ListProcessor) processList(l *unstructured.UnstructuredList) error {
 	errCh := make(chan error)
 	for i := 0; i < p.concurrency; i++ {
 		go func() {
+			defer utilruntime.HandleCrash()
 			defer wg.Done()
 			p.worker(workCh, errCh)
 		}()
 	}
 
 	go func() {
+		defer utilruntime.HandleCrash()
 		wg.Wait()
 		close(errCh)
 	}()
@@ -131,13 +135,14 @@ func (p *ListProcessor) processList(l *unstructured.UnstructuredList) error {
 func (p *ListProcessor) worker(workCh <-chan *unstructured.Unstructured, errCh chan<- error) {
 	for item := range workCh {
 		err := executeWorkerFunc(p.workerFn, item)
-		if err != nil {
-			select {
-			case errCh <- err:
-				continue
-			case <-p.ctx.Done():
-				return
-			}
+		if err == nil {
+			continue
+		}
+		select {
+		case errCh <- err:
+			continue
+		case <-p.ctx.Done():
+			return
 		}
 	}
 }
@@ -153,10 +158,14 @@ func executeWorkerFunc(workerFn WorkerFunc, obj *unstructured.Unstructured) (res
 		}
 	}()
 	result = workerFn(obj)
-	return result
+	return
 }
 
-// TODO: explain
+// inconsistentContinueToken extracts the continue token from the response which might be used to retrieve the remainder of the results
+//
+// Note:
+// continuing with the provided token might result in an inconsistent list. Objects that were created,
+// modified, or deleted between the time the first chunk was returned and now may show up in the list.
 func inconsistentContinueToken(err error) (string, error) {
 	status, ok := err.(errors.APIStatus)
 	if !ok {

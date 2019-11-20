@@ -60,7 +60,6 @@ func TestInprocessProcessor(t *testing.T) {
 			name: "handles panic",
 			workerFunc: func(obj *unstructured.Unstructured) error {
 				panic("nasty panic")
-				return nil
 			},
 			validateFunc: func(ts *testing.T, actions []clientgotesting.Action, count int, err error) {
 				if err == nil {

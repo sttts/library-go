@@ -3,11 +3,11 @@ package migrators
 import (
 	"context"
 	"fmt"
-	"k8s.io/apimachinery/pkg/api/errors"
 	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -90,7 +90,6 @@ func (m *InProcessMigrator) EnsureMigration(gr schema.GroupResource, writeKey st
 }
 
 func (m *InProcessMigrator) runMigration(gvr schema.GroupVersionResource, writeKey string, stopCh <-chan struct{}, doneCh chan<- struct{}) {
-	fmt.Printf("runMigration for %v\n", gvr)
 	var result error
 
 	defer close(doneCh)
