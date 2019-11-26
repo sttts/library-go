@@ -48,7 +48,6 @@ func NewListProcessor(ctx context.Context, dynamicClient dynamic.Interface, work
 // Run starts processing all the instance of the given GVR in batches.
 // Note that this operation block until all resources have been process, we can't get the next page or the context has been cancelled
 func (p *ListProcessor) Run(gvr schema.GroupVersionResource) error {
-	var errs []error
 	listPager := pager.New(pager.SimplePageFunc(func(opts metav1.ListOptions) (runtime.Object, error) {
 		for {
 			allResource, err := p.dynamicClient.Resource(gvr).List(opts)
@@ -75,9 +74,9 @@ func (p *ListProcessor) Run(gvr schema.GroupVersionResource) error {
 
 			migrationStarted := time.Now()
 			klog.V(4).Infof("Migrating %d objects of %v", len(allResource.Items), gvr)
-			err = p.processList(allResource)
-			if err != nil {
-				errs = append(errs, err)
+			if err = p.processList(allResource); err != nil {
+				klog.Warningf("Migration of %v failed after %v: %v", gvr, time.Now().Sub(migrationStarted), err)
+				return nil, err
 			}
 			klog.V(4).Infof("Migration of %d objects of %v finished in %v", len(allResource.Items), gvr, time.Now().Sub(migrationStarted))
 
@@ -85,75 +84,64 @@ func (p *ListProcessor) Run(gvr schema.GroupVersionResource) error {
 			return allResource, nil // leave the rest of the list intact to preserve continue token
 		}
 	}))
+	listPager.FullListIfExpired = false // prevent memory explosion from full list
 
 	migrationStarted := time.Now()
-	listPager.FullListIfExpired = false // prevent memory explosion from full list
-	_, listErr := listPager.List(p.ctx, metav1.ListOptions{})
+	if _, err := listPager.List(p.ctx, metav1.ListOptions{}); err != nil {
+		return err
+	}
 	klog.V(4).Infof("Migration for %v finished in %v", gvr, time.Now().Sub(migrationStarted))
-	errs = append(errs, listErr)
-	return utilerrors.NewAggregate(errs)
+	return nil
 }
 
 func (p *ListProcessor) processList(l *unstructured.UnstructuredList) error {
 	workCh := make(chan *unstructured.Unstructured, p.concurrency)
-	onWorkerErrorCtx, onWorkerErrorCancel := context.WithCancel(context.Background())
-	defer onWorkerErrorCancel()
+	ctx, cancel := context.WithCancel(p.ctx)
+	defer cancel()
 
+	processed := 0
 	go func() {
 		defer utilruntime.HandleCrash()
 		defer close(workCh)
 		for i := range l.Items {
 			select {
 			case workCh <- &l.Items[i]:
-			case <-p.ctx.Done():
-				return
-			case <-onWorkerErrorCtx.Done():
+				processed++
+			case <-ctx.Done():
 				return
 			}
 		}
 	}()
 
 	var wg sync.WaitGroup
-	wg.Add(p.concurrency)
-	errCh := make(chan error)
+	errCh := make(chan error, p.concurrency)
 	for i := 0; i < p.concurrency; i++ {
+		wg.Add(1)
 		go func() {
-			defer utilruntime.HandleCrash()
 			defer wg.Done()
-			p.worker(workCh, errCh)
+			if err := p.worker(workCh); err != nil {
+				errCh <- err
+				cancel() // stop everything when the first worker errors
+			}
 		}()
 	}
+	wg.Wait()
+	close(errCh)
 
-	go func() {
-		defer utilruntime.HandleCrash()
-		wg.Wait()
-		close(errCh)
-	}()
-
-	var errors []error
+	var errs []error
 	for err := range errCh {
-		errors = append(errors, err)
-		onWorkerErrorCancel()
+		errs = append(errs, err)
 	}
-	return utilerrors.NewAggregate(errors)
+	if len(errs) > 0 {
+		return utilerrors.NewAggregate(errs)
+	}
+	if processed < len(l.Items) {
+		return fmt.Errorf("context cancelled")
+	}
+	return nil
 }
 
-func (p *ListProcessor) worker(workCh <-chan *unstructured.Unstructured, errCh chan<- error) {
-	for item := range workCh {
-		err := executeWorkerFunc(p.workerFn, item)
-		if err == nil {
-			continue
-		}
-		select {
-		case errCh <- err:
-			continue
-		case <-p.ctx.Done():
-			return
-		}
-	}
-}
-
-func executeWorkerFunc(workerFn WorkerFunc, obj *unstructured.Unstructured) (result error) {
+func (p *ListProcessor) worker(workCh <-chan *unstructured.Unstructured) (result error) {
 	defer func() {
 		if r := recover(); r != nil {
 			if err, ok := r.(error); ok {
@@ -163,8 +151,14 @@ func executeWorkerFunc(workerFn WorkerFunc, obj *unstructured.Unstructured) (res
 			}
 		}
 	}()
-	result = workerFn(obj)
-	return
+
+	for item := range workCh {
+		if err := p.workerFn(item); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // inconsistentContinueToken extracts the continue token from the response which might be used to retrieve the remainder of the results
