@@ -133,6 +133,38 @@ func TestInprocessProcessor(t *testing.T) {
 			}(),
 			gvr: schema.GroupResource{Resource: "secrets"}.WithVersion("v1"),
 		},
+
+		// scenario 5:
+		{
+			name: "stops further processing on worker error",
+			workerFunc: func(obj *unstructured.Unstructured) error {
+				if obj.GetKind() != "Secret" {
+					return fmt.Errorf("incorrect kind %v", obj.GetKind())
+				}
+				return fmt.Errorf("fake error for %v", obj.GetName())
+			},
+			validateFunc: func(ts *testing.T, actions []clientgotesting.Action, count int, err error) {
+				if err == nil {
+					t.Error("expected to receive an error but none was returned")
+				}
+				if err := validateActionsVerbs(actions, []string{"list:secrets"}); err != nil {
+					t.Error(err)
+				}
+				// it is hard to give an exact number because we don't know how many workers are progressing
+				// mainly due to propagation time (closing `onWorkerErrorCtx` which propagates the stop signal to `workCh`)
+				if count >= 30 {
+					t.Errorf("workerFunc shouldn't have processed >= %d items, expected < 30 ", count)
+				}
+			},
+			resources: func() []runtime.Object {
+				ret := []runtime.Object{}
+				ret = append(ret, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "cm1", Namespace: "ns1"}})
+				ret = append(ret, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "cm2", Namespace: "ns1"}})
+				ret = append(ret, createSecrets(500*4)...)
+				return ret
+			}(),
+			gvr: schema.GroupResource{Resource: "secrets"}.WithVersion("v1"),
+		},
 	}
 	for _, scenario := range scenarios {
 		t.Run(scenario.name, func(t *testing.T) {

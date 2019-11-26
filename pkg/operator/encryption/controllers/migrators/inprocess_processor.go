@@ -96,6 +96,9 @@ func (p *ListProcessor) Run(gvr schema.GroupVersionResource) error {
 
 func (p *ListProcessor) processList(l *unstructured.UnstructuredList) error {
 	workCh := make(chan *unstructured.Unstructured, p.concurrency)
+	onWorkerErrorCtx, onWorkerErrorCancel := context.WithCancel(context.Background())
+	defer onWorkerErrorCancel()
+
 	go func() {
 		defer utilruntime.HandleCrash()
 		defer close(workCh)
@@ -103,6 +106,8 @@ func (p *ListProcessor) processList(l *unstructured.UnstructuredList) error {
 			select {
 			case workCh <- &l.Items[i]:
 			case <-p.ctx.Done():
+				return
+			case <-onWorkerErrorCtx.Done():
 				return
 			}
 		}
@@ -128,6 +133,7 @@ func (p *ListProcessor) processList(l *unstructured.UnstructuredList) error {
 	var errors []error
 	for err := range errCh {
 		errors = append(errors, err)
+		onWorkerErrorCancel()
 	}
 	return utilerrors.NewAggregate(errors)
 }
