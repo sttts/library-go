@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/davecgh/go-spew/spew"
 
@@ -539,6 +540,8 @@ func (c *InstallerController) newNodeStateForInstallInProgress(ctx context.Conte
 		if pendingNewRevision := latestRevisionAvailable > currNodeState.TargetRevision; pendingNewRevision {
 			// stop early, don't wait for ready static pod because a new revision is waiting
 			ret.LastFailedRevision = 0
+			ret.LastFailedTime = nil
+			ret.LastFailedCount = 0
 			ret.TargetRevision = 0
 			ret.LastFailedRevisionErrors = nil
 			return ret, false, "new revision pending", nil
@@ -577,6 +580,8 @@ func (c *InstallerController) newNodeStateForInstallInProgress(ctx context.Conte
 			}
 			ret.TargetRevision = 0
 			ret.LastFailedRevision = 0
+			ret.LastFailedTime = nil
+			ret.LastFailedCount = 0
 			ret.LastFailedRevisionErrors = nil
 			return ret, false, staticPodReason, nil
 		default:
@@ -598,6 +603,9 @@ func (c *InstallerController) newNodeStateForInstallInProgress(ctx context.Conte
 
 	if operandFailed {
 		ret.LastFailedRevision = currNodeState.TargetRevision
+		now := metav1.NewTime(time.Now())
+		ret.LastFailedTime = &now
+		ret.LastFailedCount++
 		ret.TargetRevision = 0
 		if len(errors) == 0 {
 			errors = append(errors, fmt.Sprintf("no detailed termination message, see `oc get -n %q pods/%q -oyaml`", installerPod.Namespace, installerPod.Name))
