@@ -55,6 +55,7 @@ func TestObserveFeatureFlags(t *testing.T) {
 				"ServiceNodeExclusion=true",
 				"SCTPSupport=true",
 				"LegacyNodeRoleBehavior=false",
+				"RemoveSelfLink=false",
 			},
 		},
 		{
@@ -68,6 +69,7 @@ func TestObserveFeatureFlags(t *testing.T) {
 				"ServiceNodeExclusion=true",
 				"SCTPSupport=true",
 				"LegacyNodeRoleBehavior=false",
+				"RemoveSelfLink=false",
 			},
 		},
 		{
